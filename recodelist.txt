@@ -1,0 +1,26 @@
+LC	Lcdesc	LCrecode	LCrecodedesc	LC_II_recode	LC_II_description	LC_RSF	LC_RSF_desc
+0	NODATA	20	NODATA	16	NODATA	9	NODATA
+1	Tussock Tundra (Low shrub or Herbaceous)	1	Tussock Tundra (Low shrub or Herbaceous)	1	Graminoid herbacceous	1	Open
+2	Dwarf Shrub	2	Dwarf Shrub	2	Dwarf scrub	1	Open
+3	Lichen	3	Lichen	3	Bryoid herbaceous	1	Open
+4	White Spruce or Black Spruce/Lichen (Woodland-Open)	4	White Spruce or Black Spruce (Woodland)	4	Needleleaf forest	2	Needleleaf forest
+5	Herbaceous (Aquatic)	5	Freshwater or Saltwater	5	Water	3	Water
+6	Deciduous Forest (Open-Closed)	6	Deciduous Forest (Open-Closed)	6	Broadleaf forest	4	Broadleaf forest
+7	Low Shrub	7	Low Shrub	7	Low scrub	5	Low scrub
+8	Low Shrub/Lichen	8	Low Shrub/Lichen	7	Low scrub	5	Low scrub
+9	Tall Shrub (Open-Closed)	9	Tall Shrub (Open-Closed)	8	Tall scrub	6	Tall scrub
+10	White Spruce or Black Spruce (Woodland)	4	White Spruce or Black Spruce (Woodland)	4	Needleleaf forest	2	Needleleaf forest
+11	Dwarf Shrub-Lichen	10	Dwarf Shrub-Lichen	2	Dwarf scrub	1	Open
+12	White Spruce or Black Spruce-Deciduous (Open-Closed)	11	White Spruce or Black Spruce-Deciduous (Open-Closed)	9	Mixed forest	7	Mixed forest
+13	Bareground	12	Bareground	10	Bareground	8	Barrens
+14	White Spruce or Black Spruce (Open-Closed)	13	White Spruce or Black Spruce (Open-Closed)	4	Needleleaf forest	2	Needleleaf forest
+15	Freshwater or Saltwater	5	Freshwater or Saltwater	5	Water	3	Water
+16	"Urban, Agriculture, Road"	14	"Urban, Agriculture, Road"	11	"Urban, Agriculture, Road"	8	Barrens
+17	Ice-Snow	15	Ice-Snow	12	Ice-Snow	8	Barrens
+18	Fire Scar	20	NODATA	16	NODATA	9	NODATA
+19	Sitka Spruce (Open-Closed)	20	NODATA	16	NODATA	9	NODATA
+20	Low Shrub or Tall Shrub (Open-Closed)	16	Low Shrub or Tall Shrub (Open-Closed)	16	NODATA	9	NODATA
+21	"Herbaceous (Mesic) (Interior Alaska, Cook Inlet Basin)"	17	"Herbaceous (Mesic) (Interior Alaska, Cook Inlet Basin)"	13	Herbaceous (Mesic)	1	Open
+22	"Herbaceous (Wet) (Interior Alaska, Cook Inlet Basin)"	18	"Herbaceous (Wet) (Interior Alaska, Cook Inlet Basin)"	14	Herbaceous (Wet)	1	Open
+23	"Sparse Vegetation (Interior Alaska, Cook Inlet Basin)"	19	"Sparse Vegetation (Interior Alaska, Cook Inlet Basin)"	15	Sparse Vegetation	8	Barrens
+128	NODATA	20	NODATA	16	NODATA	9	NODATA
