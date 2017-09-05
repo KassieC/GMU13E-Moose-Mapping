@@ -2,7 +2,7 @@ library(plyr)
 library(sp)
 library(raster)
 library(rgdal)
-wd="" #Directory with data in it.
+wd="" #The directory with the data in it.
 
 setwd(wd)
 LOC_DF=read.table("WatMooPts-1267.txt",header=TRUE,sep="\t")
@@ -26,16 +26,42 @@ LOC_DF$Cohort=as.factor(LOC_DF$Cohort)
 
 season=c(rep("latewinter",91),rep("spring",39),rep("calving",37),rep("summer",77),rep("fall",61),rep("postrut",30),rep("winter",31)) #This could probably be handled better with an ifelse. Calendar is 366 days long (leap year).
 cal=as.data.frame(x = cbind(1:366,season)) 
-cal$season=as.factor(cal$season)
 names(cal)=c("jday","season")
-LOC_DF$eseason=join(LOC_DF,cal,by="jday",type="left",match="all")$season #Extended season. For housekeeping purposes.
+cal$season=as.factor(cal$season)
+cal$jday=as.numeric(1:366)
+LOC_DF$eseason=join(LOC_DF,cal,by="jday",type="left",match="first")$season #Extended season. For housekeeping purposes.
 LOC_DF$pseason=as.factor(ifelse(LOC_DF$eseason == "latewinter",paste("winter",sep=""),(paste(LOC_DF$eseason,sep="")))) #Pooled season. Pools season across all years.
 LOC_DF$yseason=as.factor(ifelse(LOC_DF$eseason == "latewinter",(paste(LOC_DF$year-1,"winter",sep="")),(paste(LOC_DF$year,LOC_DF$eseason,sep="")))) #Year-season, wrapping winters across the year boundary, and then storing it by-year
 
-# LOC_DF$yearseasonid=as.factor(paste(LOC_DF$AnNum,LOC_DF$yseason,sep="_")) # This is only needed if we're doing KDEs by year-season-annum
+LOC_DF$yearseasonid=as.factor(paste(LOC_DF$AnNum,LOC_DF$yseason,sep="_")) 
+
+part_table=read.delim("parturition.txt",header = TRUE, sep="\t")
+part_table$yearseasonid=as.factor(paste(part_table$AnNum,"_",part_table$Year,"calving",sep=""))
+LOC_DF$partur=join(LOC_DF,part_table,by="yearseasonid",type="left",match="first")$Parturition
 
 #Mark these as used points.
 LOC_DF$used=rep(1,nrow(LOC_DF))
+
+#What are we doing here? Origionally our calendar contained 6 seasons (and winter split), but we need to relump everything to fix some issues we've had. Unfortunately, we can't alter the calendar directly (legacy reasons), and in any event, the calendar can't help with parturition. So, for purposes here, we're going to chop up the dataset and re-classify everything into new seasons manually.
+temp_df1=subset(LOC_DF,(pseason=="winter")|(pseason=="summer")) #These are the points we don't want to re-classify
+
+temp_df2=subset(LOC_DF,(pseason=="fall")|(pseason=="postrut")) #These are the points we're lumping into "autumn"
+temp_df2$pseason=rep("autumn",nrow(temp_df2))
+
+temp_df3=subset(LOC_DF,((pseason=="spring")|(pseason=="calving"))&(sex=="M")) #These are the male points we're calling "greenup"
+temp_df3$pseason=rep("greenup",nrow(temp_df3))
+
+temp_df4=subset(LOC_DF,(pseason=="spring")&(sex=="F")) #All female spring points are re-classed "greenup"
+temp_df4$pseason=rep("greenup",nrow(temp_df4))            
+                
+temp_df5=subset(LOC_DF,(pseason=="calving")&(sex=="F")&((partur==0)|(is.na(partur)==TRUE))) #These are the calf-less female points we're calling "greenup"
+temp_df5$pseason=rep("greenup",nrow(temp_df5))  
+
+temp_df6=subset(LOC_DF,(pseason=="calving")&(sex=="F")&(partur==1)) #These are the parturant female points we're calling "calving" They start out as calving, so don't need over-written
+
+LOC_DF=rbind(temp_df1,temp_df2,temp_df3,temp_df4,temp_df5,temp_df6) #now we rebind the whole lot into an object
+rm(temp_df1,temp_df2,temp_df3,temp_df4,temp_df5,temp_df6) #and erase the temporary files.
+LOC_DF=droplevels(LOC_DF) #Trim un-used levels.
 
 #Write drop table
 DTable=as.data.frame(cbind(ifelse(test = (summary(as.factor(LOC_DF$AnNum))<=200),1,0),names(summary(as.factor(LOC_DF$AnNum)))))
@@ -45,7 +71,8 @@ LOC_DF$drop=join(LOC_DF,DTable,by="AnNum",type="left",match="all")$drop
 #Dropping any animals where n(total) < 200
 LOC_DF=subset(LOC_DF,(drop==0))
 LOC_DF=droplevels(LOC_DF)
-
+#Remove 2016 calving and summer as they're outside the study period.
+LOC_DF=subset(LOC_DF,(yseason!="2016calving")&(yseason!="2016summer"))
 
 #Make this into a spatial df
 LOC_SPDF<-SpatialPointsDataFrame(coords = cbind(LOC_DF$GPS_Longitude,LOC_DF$GPS_Latitude), data=LOC_DF, proj4string = CRS("+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs"))
@@ -57,6 +84,8 @@ LOC_SPDF$pseason=as.factor(LOC_SPDF$pseason)
 #####Loading Rasters###############
 
 rasterOptions(tmpdir=paste(wd,"/tempdir",sep = "")) #this is important to dealing with raster grids... because otherwise they are going to vanish in the default tempfile sometime during your analysis. That's a bad thing(tm)
+
+####DE_COMMENT THE FOLLOWING LINES TO MAKE THE RASTER BRICK####
 dem=raster("DEM_RS_Scaled.tif")
 dem2=calc(dem, fun=function(x){x^2})
 TRI=raster("TRI_Scaled.tif")
@@ -88,7 +117,8 @@ for (i in 1:length(levels(LC)[[1]][,1]))
   }
 
 bricked=stack(dem,dem2,TRI,LC_brick,LC_O,SLP,ASP,ASPINT)
-names(bricked)=c("dem","dem2","TRI",names(LC_brick),"LC_O","SLP","ASP","ASPINT")
+
+names(bricked)=c("dem","dem2","TRI","OPN", "NDL", "H2O", "BDL", "LSC", "TSC", "MIX", "BAR","LC_O","SLP","ASP","ASPINT")
 
 
 i=1
@@ -120,18 +150,25 @@ for (j in 1:length(levels(LOC_SPDF@data$pseason)))
 
 inf_factor = 8 #Number of avail-per-used
 
-AVAIL_SPDF=LOC_SPDF[1,c("AnNum", "sex", "pseason", "used")]
+AVAIL_SPDF=LOC_SPDF[1,c("AnNum", "sex", "pseason", "used", "partur")]
 AVAIL_SPDF=AVAIL_SPDF[-1,]
 
 
 for (i in 1:nrow(LOC_SPDF))
   {dumpspdf = spsample(buffer(LOC_SPDF[i,],width=12670), n = inf_factor, type = "random", iter=10)
-  dumpdata=as.data.frame(cbind(rep((levels(LOC_SPDF@data$AnNum)[LOC_SPDF[i,]$AnNum]),inf_factor),rep((levels(LOC_SPDF@data$sex)[LOC_SPDF[i,]$sex]),inf_factor),rep(levels(LOC_SPDF@data$pseason)[LOC_SPDF[i,]$pseason],inf_factor),rep(0,inf_factor)))
-  names(dumpdata)=c("AnNum","sex","pseason","used")  
+  dumpdata=as.data.frame(cbind(rep((levels(LOC_SPDF@data$AnNum)[LOC_SPDF[i,]$AnNum]),inf_factor),rep((levels(LOC_SPDF@data$sex)[LOC_SPDF[i,]$sex]),inf_factor),rep(levels(LOC_SPDF@data$pseason)[LOC_SPDF[i,]$pseason],inf_factor),rep(0,inf_factor),rep(LOC_SPDF[i,]$partur,inf_factor)))
+  names(dumpdata)=c("AnNum","sex","pseason","used","partur")  
   dumpspdf=SpatialPointsDataFrame(dumpspdf,data=dumpdata)
   AVAIL_SPDF=rbind(AVAIL_SPDF,dumpspdf)
   }
 rm(dumpspdf,dumpdata,i)
+
+# In order to add the sex information, I need to unload adehabitat* (and re-load plyr) to unmask plyr's ID function. Frustrating. 
+# detach(package:adehabitatLT)
+# detach(package:adehabitatMA)
+# detach(package:adehabitatHR)
+# detach(package:plyr)
+# library(plyr)
 
 temp=as.data.frame(x= c(as.character(AVAIL_SPDF$AnNum)))
 names(temp)=c("AnNum")
@@ -144,10 +181,14 @@ rm(temp)
 # {temp=rbind(temp,c(length(subset(LOC_SPDF, (AnNum == levels(LOC_SPDF$AnNum)[i])))/length(subset(AVAIL_SPDF, (AnNum == levels(LOC_SPDF$AnNum)[i]))), length(subset(LOC_SPDF, (AnNum == levels(LOC_SPDF$AnNum)[i]))), length(subset(AVAIL_SPDF, (AnNum == levels(LOC_SPDF$AnNum)[i]))), levels(LOC_SPDF$AnNum)[i]))}
 
 #####Merge db and extract.##############
-ANALYSIS_SPDF=rbind(LOC_SPDF[,c("AnNum","sex","pseason","used")],AVAIL_SPDF) #Merges only the AnNum, sex, pseason, and used colums ATM. In the future, we may wish to include whether an animal was parturant or not for calving model (YIKES!)
+ANALYSIS_SPDF=rbind(LOC_SPDF[,c("AnNum","sex","pseason","used","partur")],AVAIL_SPDF) #Merges only the AnNum, sex, pseason, patur and used columns. 
 ANALYSIS_SPDF@data$used=as.numeric(ANALYSIS_SPDF@data$used)
 
 ANALYSIS_SPDF@data=cbind(ANALYSIS_SPDF@data, extract(bricked,ANALYSIS_SPDF))
+
+
+
+######Here's some code for testing for correlations between variables######
 
 cor.test(ANALYSIS_SPDF@data$TRI,ANALYSIS_SPDF@data$SLP,method="pearson") #Slope and TRI correlated.
 cor.test(ANALYSIS_SPDF@data$ASP,ANALYSIS_SPDF@data$SLP,method="pearson") #Slope and ASP not correlated.
@@ -174,17 +215,18 @@ AIC(m1,m2,m3,m4,m5)
 #Models.
 library(lme4)
 library(lmerTest)
-library(coefplot2)
+# library(coefplot2)
 library(ResourceSelection)
 library(snow)
 library(boot)
 Sys.time()
 
-
-
+#######################################NEW SEASON#############################
+##############################################################################
+##############################################################################
 kfolds=5
 ModSeason="winter"
-ModSex="M"
+ModSex="F"
 gen_form="used~dem+dem2+TRI+OPN+NDL+H2O+BDL+LSC+TSC+MIX+BAR+(1|AnNum)-1" #This is where we're storing the glmer formula. Will paste it elsewhere to save on linespace and to allow easy editing of all models at the same time. call as "as.formula(gen_form)"
 #gen_form="used~dem+dem2+TRI+OPN+NDL+H2O+BDL+LSC+TSC+MIX+BAR+ASP+TRI*ASP+(1|AnNum)-1"
 #model=glmer(as.formula(gen_form),data=subset(ANALYSIS_SPDF@data,(sex==ModSex)&(pseason=="calving"|pseason=="summer")), family="binomial",nAGQ=6)
@@ -195,10 +237,10 @@ names(withhold_key)=c("AnNum","Fold_N")
 temp_dat_obj$Fold_N=join(temp_dat_obj,withhold_key,by="AnNum",type="left",match="all")$Fold_N ## just joining up the key to datasubset so everyone has their fold number
 rank_cor_obj=c()
 for(i in 1:kfolds)
-  {
+{
   trained=subset(temp_dat_obj,(Fold_N!=i))  #Training data = everyone but fold i
   witheld=subset(temp_dat_obj,(Fold_N==i))  #Withheld data = only fold i
-  predicted_model=glmer(as.formula(gen_form),data=trained, family="binomial")
+  predicted_model=glmer(as.formula(gen_form),data=trained, family="binomial", glmerControl(optimizer="bobyqa", optCtrl = list(maxfun = 300000)))
   beginCluster()
   predicted_rast <- clusterR(bricked, raster::predict, args = list(model = predicted_model, re.form = NA)) #Predict raster based on model with no randomeffects structure.
   endCluster()
@@ -238,68 +280,628 @@ for(i in 1:kfolds)
   cor_out=cor.test(rsf.bins,binrank,method="spearman")
   rank_cor_obj=rbind(rank_cor_obj,c(rsf.bins,cor_out$p.value,cor_out$estimate))
   cat(paste("Fold",i,"of",kfolds))
-  cat(Sys.time())
-  }
+  Sys.time()
+}
 
 rank_cor_overall=cor.test(c(rank_cor_obj[1,1:10],rank_cor_obj[2,1:10],rank_cor_obj[3,1:10],rank_cor_obj[4,1:10],rank_cor_obj[5,1:10]),rep(1:10,5),method="spearman")
+write.table(rank_cor_overall,paste(ModSex,"_",ModSeason,"_rankcor.txt",sep=""))
 
-Winter_model=glmer(used~dem+dem2+TRI+OPN+NDL+H2O+BDL+LSC+TSC+MIX+BAR+(1|AnNum)-1 ,data=subset(ANALYSIS_SPDF@data,(sex=="M")&(pseason=="winter")), family="binomial", nAGQ=3)
-Sys.time()
-Spring_model=glmer(used~dem+dem2+TRI+OPN+NDL+H2O+BDL+LSC+TSC+MIX+BAR+(1|AnNum)-1 ,data=subset(ANALYSIS_SPDF@data,(sex=="M")&(pseason=="spring" | pseason=="calving")), family="binomial", nAGQ=3)
-Sys.time()
-# Calving_model=glmer(used~dem+dem2+TRI+OPN+NDL+H2O+BDL+LSC+TSC+MIX+BAR+(1|AnNum)-1 ,data=subset(ANALYSIS_SPDF@data,(sex=="M")&(pseason=="calving")), family="binomial", nAGQ=3)
-# Sys.time()
-Summer_model=glmer(used~dem+dem2+TRI+OPN+NDL+H2O+BDL+LSC+TSC+MIX+BAR+(1|AnNum)-1 ,data=subset(ANALYSIS_SPDF@data,(sex=="M")&(pseason=="summer")), family="binomial", nAGQ=3)
-Sys.time()
-Fall_model=glmer(used~dem+dem2+TRI+OPN+NDL+H2O+BDL+LSC+TSC+MIX+BAR+(1|AnNum)-1 ,data=subset(ANALYSIS_SPDF@data,(sex=="M")&(pseason=="postrut" | pseason=="fall")), family="binomial", nAGQ=3)
-Sys.time()
-# Postrut_model=glmer(used~dem+dem2+TRI+OPN+NDL+H2O+BDL+LSC+TSC+MIX+BAR+(1|AnNum)-1 ,data=subset(ANALYSIS_SPDF@data,(sex=="M")&(pseason=="postrut")), family="binomial", nAGQ=3)
-
-par(mfrow=c(2,3))
-
-####TRI Residual plot
-plot(subset(ANALYSIS_SPDF@data,(sex=="F")&(pseason=="winter"))$TRI, residuals(Winter_model), col=c("Blue","Red")[subset(ANALYSIS_SPDF@data,(sex=="F")&(pseason=="winter"))$used+1])
-
-plot(subset(ANALYSIS_SPDF@data,(sex=="F")&(pseason=="spring"))$TRI, residuals(Spring_model), col=c("Blue","Red")[subset(ANALYSIS_SPDF@data,(sex=="F")&(pseason=="spring"))$used+1])
-
-plot(subset(ANALYSIS_SPDF@data,(sex=="F")&(pseason=="calving"))$TRI, residuals(Calving_model), col=c("Blue","Red")[subset(ANALYSIS_SPDF@data,(sex=="F")&(pseason=="calving"))$used+1])
-
-plot(subset(ANALYSIS_SPDF@data,(sex=="F")&(pseason=="summer"))$TRI, residuals(Summer_model), col=c("Blue","Red")[subset(ANALYSIS_SPDF@data,(sex=="F")&(pseason=="summer"))$used+1])
-
-plot(subset(ANALYSIS_SPDF@data,(sex=="F")&(pseason=="fall"))$TRI, residuals(Fall_model), col=c("Blue","Red")[subset(ANALYSIS_SPDF@data,(sex=="F")&(pseason=="fall"))$used+1])
-
-plot(subset(ANALYSIS_SPDF@data,(sex=="F")&(pseason=="postrut"))$TRI, residuals(Postrut_model), col=c("Blue","Red")[subset(ANALYSIS_SPDF@data,(sex=="F")&(pseason=="postrut"))$used+1])
-
-####Elevation Residual plot
-plot(subset(ANALYSIS_SPDF@data,(sex=="F")&(pseason=="winter"))$dem, residuals(Winter_model), col=c("Blue","Red")[subset(ANALYSIS_SPDF@data,(sex=="F")&(pseason=="winter"))$used+1])
-
-plot(subset(ANALYSIS_SPDF@data,(sex=="F")&(pseason=="spring"))$dem, residuals(Spring_model), col=c("Blue","Red")[subset(ANALYSIS_SPDF@data,(sex=="F")&(pseason=="spring"))$used+1])
-
-plot(subset(ANALYSIS_SPDF@data,(sex=="F")&(pseason=="calving"))$dem, residuals(Calving_model), col=c("Blue","Red")[subset(ANALYSIS_SPDF@data,(sex=="F")&(pseason=="calving"))$used+1])
-
-plot(subset(ANALYSIS_SPDF@data,(sex=="F")&(pseason=="summer"))$dem, residuals(Summer_model), col=c("Blue","Red")[subset(ANALYSIS_SPDF@data,(sex=="F")&(pseason=="summer"))$used+1])
-
-plot(subset(ANALYSIS_SPDF@data,(sex=="F")&(pseason=="fall"))$dem, residuals(Fall_model), col=c("Blue","Red")[subset(ANALYSIS_SPDF@data,(sex=="F")&(pseason=="fall"))$used+1])
-
-#plot(subset(ANALYSIS_SPDF@data,(sex=="F")&(pseason=="postrut"))$dem, residuals(Postrut_model), col=c("Blue","Red")[subset(ANALYSIS_SPDF@data,(sex=="F")&(pseason=="postrut"))$used+1])
-
-
+GlobalModel=glmer(as.formula(gen_form),data=subset(ANALYSIS_SPDF@data,(sex==ModSex)&(pseason==ModSeason)), family="binomial",glmerControl(optimizer="bobyqa", optCtrl = list(maxfun = 300000)))
 beginCluster()
-Fall_Pred <- clusterR(bricked, raster::predict, args = list(model = Fall_model, re.form = NA))
-Winter_Pred <- clusterR(bricked, raster::predict, args = list(model = Winter_model, re.form = NA))
-Postrut_Pred <- clusterR(bricked, raster::predict, args = list(model = Postrut_model, re.form = NA))
+PredictedSurface <- clusterR(bricked, raster::predict, args = list(model = GlobalModel, re.form = NA))
+PredictedSurface_INVLOG=clusterR(PredictedSurface, raster::calc, args = list(fun=inv.logit))
 endCluster()
-Winter_Pred = calc(Winter_Pred, fun=inv.logit)
-Postrut_Pred = calc(Postrut_Pred, fun=inv.logit)
-Fall_Pred= calc(Fall_Pred, fun=inv.logit)
 
-par(mfrow=c(1,2))
-plot(Winter_Pred)
-plot(Postrut_Pred)
-par(mfrow=c(1,1))
 
-hoslem.test(subset(ANALYSIS_SPDF@data,(sex=="F")&(pseason=="winter"))$used, fitted(Winter_model), 10)
-hoslem.test(subset(ANALYSIS_SPDF@data,(sex=="F")&(pseason=="spring"))$used, fitted(Spring_model), 10)
-hoslem.test(subset(ANALYSIS_SPDF@data,(sex=="F")&(pseason=="calving"))$used, fitted(Calving_model), 10)
-hoslem.test(subset(ANALYSIS_SPDF@data,(sex=="F")&(pseason=="summer"))$used, fitted(Summer_model), 10)
-hoslem.test(subset(ANALYSIS_SPDF@data,(sex=="F")&(pseason=="fall"))$used, fitted(Fall_model), 10)
+save.image(paste(ModSex,"_",ModSeason,".RData",sep=""))
+writeRaster(PredictedSurface,paste(ModSex,"_",ModSeason,".tif",sep=""))
+writeRaster(PredictedSurface_INVLOG,paste(ModSex,"_",ModSeason,"_invlogit.tif",sep=""))
+
+#######################################NEW SEASON#############################
+##############################################################################
+##############################################################################
+kfolds=5
+ModSeason="greenup"
+ModSex="F"
+gen_form="used~dem+dem2+TRI+OPN+NDL+H2O+BDL+LSC+TSC+MIX+BAR+(1|AnNum)-1" #This is where we're storing the glmer formula. Will paste it elsewhere to save on linespace and to allow easy editing of all models at the same time. call as "as.formula(gen_form)"
+#gen_form="used~dem+dem2+TRI+OPN+NDL+H2O+BDL+LSC+TSC+MIX+BAR+ASP+TRI*ASP+(1|AnNum)-1"
+#model=glmer(as.formula(gen_form),data=subset(ANALYSIS_SPDF@data,(sex==ModSex)&(pseason=="calving"|pseason=="summer")), family="binomial",nAGQ=6)
+
+temp_dat_obj=subset(ANALYSIS_SPDF@data,(sex==ModSex)&(pseason==ModSeason)) #creating subset data object for the model in question.
+withhold_key=as.data.frame(cbind(levels(temp_dat_obj$AnNum), sample(1:kfolds, length(levels(temp_dat_obj$AnNum)), replace=TRUE))) ## Note k-folds is conditioned on animal (annum), using 5 folds.
+names(withhold_key)=c("AnNum","Fold_N")
+temp_dat_obj$Fold_N=join(temp_dat_obj,withhold_key,by="AnNum",type="left",match="all")$Fold_N ## just joining up the key to datasubset so everyone has their fold number
+rank_cor_obj=c()
+for(i in 1:kfolds)
+{
+  trained=subset(temp_dat_obj,(Fold_N!=i))  #Training data = everyone but fold i
+  witheld=subset(temp_dat_obj,(Fold_N==i))  #Withheld data = only fold i
+  predicted_model=glmer(as.formula(gen_form),data=trained, family="binomial", glmerControl(optimizer="bobyqa", optCtrl = list(maxfun = 300000)))
+  beginCluster()
+  predicted_rast <- clusterR(bricked, raster::predict, args = list(model = predicted_model, re.form = NA)) #Predict raster based on model with no randomeffects structure.
+  endCluster()
+  predicted_witheld=predict(predicted_model, newdata=subset(witheld,(used==1)),re.form=NA) #Predict RSF scores to the withheld used points. This is used later...
+  predicted_avail_fit=extract(predicted_rast,availarea) #extract from the totality of the study area.
+  ###Following code care of Katie Christie/Mark Boyce, edited to play nice with us.####
+  ###Biggest changes are generalization to work with looping arch. as well as storing outputs to df for automation purposes.
+  names(predicted_avail_fit)="fit"
+  pred.avail.fit<-na.omit(predicted_avail_fit$fit)
+  #Make rsf bins with equal numbers of random locations in each bin
+  avail.rsf.bins<-cut(pred.avail.fit, quantile(pred.avail.fit, seq(0, 1, len = 11)), include.lowest = TRUE) 
+  avail.rsf.bins<-table(avail.rsf.bins)
+  avail.rsf.bins
+  v<-dimnames(avail.rsf.bins)
+  v <- data.frame(v, stringsAsFactors = FALSE)
+  y1<-v[1,1]
+  y2<-v[3,1]
+  y3<-v[5,1]
+  y4<-v[7,1]
+  y5<-v[9,1]
+  y6<-v[10,1]
+  ynew<-c(y1,y2,y3,y4,y5,y6)
+  ynew<-gsub("\\[", "", ynew)
+  ynew<-gsub("\\]", "", ynew)
+  ynew<-gsub("\\(", "", ynew)
+  ynew<-gsub("  ", "", ynew)
+  ynew<-as.numeric(unlist(strsplit(ynew,split="[,]")))
+  ynew<-ynew[-10]
+  avail.rsf.bins<-ynew
+  
+  rsf.with<-predicted_witheld[1:length(predicted_witheld)]
+  hist(rsf.with)
+  rsf.bins<-cut(rsf.with,breaks=avail.rsf.bins)
+  rsf.bins<-table(rsf.bins)
+  rsf.bins<-as.numeric(rsf.bins)
+  binrank<-seq(1,10,length.out=10)
+  cor_out=cor.test(rsf.bins,binrank,method="spearman")
+  rank_cor_obj=rbind(rank_cor_obj,c(rsf.bins,cor_out$p.value,cor_out$estimate))
+  cat(paste("Fold",i,"of",kfolds))
+  Sys.time()
+}
+
+rank_cor_overall=cor.test(c(rank_cor_obj[1,1:10],rank_cor_obj[2,1:10],rank_cor_obj[3,1:10],rank_cor_obj[4,1:10],rank_cor_obj[5,1:10]),rep(1:10,5),method="spearman")
+write.table(rank_cor_overall,paste(ModSex,"_",ModSeason,"_rankcor.txt",sep=""))
+
+GlobalModel=glmer(as.formula(gen_form),data=subset(ANALYSIS_SPDF@data,(sex==ModSex)&(pseason==ModSeason)), family="binomial",glmerControl(optimizer="bobyqa", optCtrl = list(maxfun = 300000)))
+beginCluster()
+PredictedSurface <- clusterR(bricked, raster::predict, args = list(model = GlobalModel, re.form = NA))
+PredictedSurface_INVLOG=clusterR(PredictedSurface, raster::calc, args = list(fun=inv.logit))
+endCluster()
+
+
+save.image(paste(ModSex,"_",ModSeason,".RData",sep=""))
+writeRaster(PredictedSurface,paste(ModSex,"_",ModSeason,".tif",sep=""))
+writeRaster(PredictedSurface_INVLOG,paste(ModSex,"_",ModSeason,"_invlogit.tif",sep=""))
+
+#######################################NEW SEASON#############################
+##############################################################################
+##############################################################################
+kfolds=5
+ModSeason="calving"
+ModSex="F"
+gen_form="used~dem+dem2+TRI+OPN+NDL+H2O+BDL+LSC+TSC+MIX+BAR+(1|AnNum)-1" #This is where we're storing the glmer formula. Will paste it elsewhere to save on linespace and to allow easy editing of all models at the same time. call as "as.formula(gen_form)"
+#gen_form="used~dem+dem2+TRI+OPN+NDL+H2O+BDL+LSC+TSC+MIX+BAR+ASP+TRI*ASP+(1|AnNum)-1"
+#model=glmer(as.formula(gen_form),data=subset(ANALYSIS_SPDF@data,(sex==ModSex)&(pseason=="calving"|pseason=="summer")), family="binomial",nAGQ=6)
+
+temp_dat_obj=subset(ANALYSIS_SPDF@data,(sex==ModSex)&(pseason==ModSeason)) #creating subset data object for the model in question.
+withhold_key=as.data.frame(cbind(levels(temp_dat_obj$AnNum), sample(1:kfolds, length(levels(temp_dat_obj$AnNum)), replace=TRUE))) ## Note k-folds is conditioned on animal (annum), using 5 folds.
+names(withhold_key)=c("AnNum","Fold_N")
+temp_dat_obj$Fold_N=join(temp_dat_obj,withhold_key,by="AnNum",type="left",match="all")$Fold_N ## just joining up the key to datasubset so everyone has their fold number
+rank_cor_obj=c()
+for(i in 1:kfolds)
+{
+  trained=subset(temp_dat_obj,(Fold_N!=i))  #Training data = everyone but fold i
+  witheld=subset(temp_dat_obj,(Fold_N==i))  #Withheld data = only fold i
+  predicted_model=glmer(as.formula(gen_form),data=trained, family="binomial", glmerControl(optimizer="bobyqa", optCtrl = list(maxfun = 300000)))
+  beginCluster()
+  predicted_rast <- clusterR(bricked, raster::predict, args = list(model = predicted_model, re.form = NA)) #Predict raster based on model with no randomeffects structure.
+  endCluster()
+  predicted_witheld=predict(predicted_model, newdata=subset(witheld,(used==1)),re.form=NA) #Predict RSF scores to the withheld used points. This is used later...
+  predicted_avail_fit=extract(predicted_rast,availarea) #extract from the totality of the study area.
+  ###Following code care of Katie Christie/Mark Boyce, edited to play nice with us.####
+  ###Biggest changes are generalization to work with looping arch. as well as storing outputs to df for automation purposes.
+  names(predicted_avail_fit)="fit"
+  pred.avail.fit<-na.omit(predicted_avail_fit$fit)
+  #Make rsf bins with equal numbers of random locations in each bin
+  avail.rsf.bins<-cut(pred.avail.fit, quantile(pred.avail.fit, seq(0, 1, len = 11)), include.lowest = TRUE) 
+  avail.rsf.bins<-table(avail.rsf.bins)
+  avail.rsf.bins
+  v<-dimnames(avail.rsf.bins)
+  v <- data.frame(v, stringsAsFactors = FALSE)
+  y1<-v[1,1]
+  y2<-v[3,1]
+  y3<-v[5,1]
+  y4<-v[7,1]
+  y5<-v[9,1]
+  y6<-v[10,1]
+  ynew<-c(y1,y2,y3,y4,y5,y6)
+  ynew<-gsub("\\[", "", ynew)
+  ynew<-gsub("\\]", "", ynew)
+  ynew<-gsub("\\(", "", ynew)
+  ynew<-gsub("  ", "", ynew)
+  ynew<-as.numeric(unlist(strsplit(ynew,split="[,]")))
+  ynew<-ynew[-10]
+  avail.rsf.bins<-ynew
+  
+  rsf.with<-predicted_witheld[1:length(predicted_witheld)]
+  hist(rsf.with)
+  rsf.bins<-cut(rsf.with,breaks=avail.rsf.bins)
+  rsf.bins<-table(rsf.bins)
+  rsf.bins<-as.numeric(rsf.bins)
+  binrank<-seq(1,10,length.out=10)
+  cor_out=cor.test(rsf.bins,binrank,method="spearman")
+  rank_cor_obj=rbind(rank_cor_obj,c(rsf.bins,cor_out$p.value,cor_out$estimate))
+  cat(paste("Fold",i,"of",kfolds))
+  Sys.time()
+}
+
+rank_cor_overall=cor.test(c(rank_cor_obj[1,1:10],rank_cor_obj[2,1:10],rank_cor_obj[3,1:10],rank_cor_obj[4,1:10],rank_cor_obj[5,1:10]),rep(1:10,5),method="spearman")
+write.table(rank_cor_overall,paste(ModSex,"_",ModSeason,"_rankcor.txt",sep=""))
+
+GlobalModel=glmer(as.formula(gen_form),data=subset(ANALYSIS_SPDF@data,(sex==ModSex)&(pseason==ModSeason)), family="binomial",glmerControl(optimizer="bobyqa", optCtrl = list(maxfun = 300000)))
+beginCluster()
+PredictedSurface <- clusterR(bricked, raster::predict, args = list(model = GlobalModel, re.form = NA))
+PredictedSurface_INVLOG=clusterR(PredictedSurface, raster::calc, args = list(fun=inv.logit))
+endCluster()
+
+
+save.image(paste(ModSex,"_",ModSeason,".RData",sep=""))
+writeRaster(PredictedSurface,paste(ModSex,"_",ModSeason,".tif",sep=""))
+writeRaster(PredictedSurface_INVLOG,paste(ModSex,"_",ModSeason,"_invlogit.tif",sep=""))
+
+#######################################NEW SEASON#############################
+##############################################################################
+##############################################################################
+kfolds=5
+ModSeason="summer"
+ModSex="F"
+gen_form="used~dem+dem2+TRI+OPN+NDL+H2O+BDL+LSC+TSC+MIX+BAR+(1|AnNum)-1" #This is where we're storing the glmer formula. Will paste it elsewhere to save on linespace and to allow easy editing of all models at the same time. call as "as.formula(gen_form)"
+#gen_form="used~dem+dem2+TRI+OPN+NDL+H2O+BDL+LSC+TSC+MIX+BAR+ASP+TRI*ASP+(1|AnNum)-1"
+#model=glmer(as.formula(gen_form),data=subset(ANALYSIS_SPDF@data,(sex==ModSex)&(pseason=="calving"|pseason=="summer")), family="binomial",nAGQ=6)
+
+temp_dat_obj=subset(ANALYSIS_SPDF@data,(sex==ModSex)&(pseason==ModSeason)) #creating subset data object for the model in question.
+withhold_key=as.data.frame(cbind(levels(temp_dat_obj$AnNum), sample(1:kfolds, length(levels(temp_dat_obj$AnNum)), replace=TRUE))) ## Note k-folds is conditioned on animal (annum), using 5 folds.
+names(withhold_key)=c("AnNum","Fold_N")
+temp_dat_obj$Fold_N=join(temp_dat_obj,withhold_key,by="AnNum",type="left",match="all")$Fold_N ## just joining up the key to datasubset so everyone has their fold number
+rank_cor_obj=c()
+for(i in 1:kfolds)
+{
+  trained=subset(temp_dat_obj,(Fold_N!=i))  #Training data = everyone but fold i
+  witheld=subset(temp_dat_obj,(Fold_N==i))  #Withheld data = only fold i
+  predicted_model=glmer(as.formula(gen_form),data=trained, family="binomial", glmerControl(optimizer="bobyqa", optCtrl = list(maxfun = 300000)))
+  beginCluster()
+  predicted_rast <- clusterR(bricked, raster::predict, args = list(model = predicted_model, re.form = NA)) #Predict raster based on model with no randomeffects structure.
+  endCluster()
+  predicted_witheld=predict(predicted_model, newdata=subset(witheld,(used==1)),re.form=NA) #Predict RSF scores to the withheld used points. This is used later...
+  predicted_avail_fit=extract(predicted_rast,availarea) #extract from the totality of the study area.
+  ###Following code care of Katie Christie/Mark Boyce, edited to play nice with us.####
+  ###Biggest changes are generalization to work with looping arch. as well as storing outputs to df for automation purposes.
+  names(predicted_avail_fit)="fit"
+  pred.avail.fit<-na.omit(predicted_avail_fit$fit)
+  #Make rsf bins with equal numbers of random locations in each bin
+  avail.rsf.bins<-cut(pred.avail.fit, quantile(pred.avail.fit, seq(0, 1, len = 11)), include.lowest = TRUE) 
+  avail.rsf.bins<-table(avail.rsf.bins)
+  avail.rsf.bins
+  v<-dimnames(avail.rsf.bins)
+  v <- data.frame(v, stringsAsFactors = FALSE)
+  y1<-v[1,1]
+  y2<-v[3,1]
+  y3<-v[5,1]
+  y4<-v[7,1]
+  y5<-v[9,1]
+  y6<-v[10,1]
+  ynew<-c(y1,y2,y3,y4,y5,y6)
+  ynew<-gsub("\\[", "", ynew)
+  ynew<-gsub("\\]", "", ynew)
+  ynew<-gsub("\\(", "", ynew)
+  ynew<-gsub("  ", "", ynew)
+  ynew<-as.numeric(unlist(strsplit(ynew,split="[,]")))
+  ynew<-ynew[-10]
+  avail.rsf.bins<-ynew
+  
+  rsf.with<-predicted_witheld[1:length(predicted_witheld)]
+  hist(rsf.with)
+  rsf.bins<-cut(rsf.with,breaks=avail.rsf.bins)
+  rsf.bins<-table(rsf.bins)
+  rsf.bins<-as.numeric(rsf.bins)
+  binrank<-seq(1,10,length.out=10)
+  cor_out=cor.test(rsf.bins,binrank,method="spearman")
+  rank_cor_obj=rbind(rank_cor_obj,c(rsf.bins,cor_out$p.value,cor_out$estimate))
+  cat(paste("Fold",i,"of",kfolds))
+  Sys.time()
+}
+
+rank_cor_overall=cor.test(c(rank_cor_obj[1,1:10],rank_cor_obj[2,1:10],rank_cor_obj[3,1:10],rank_cor_obj[4,1:10],rank_cor_obj[5,1:10]),rep(1:10,5),method="spearman")
+write.table(rank_cor_overall,paste(ModSex,"_",ModSeason,"_rankcor.txt",sep=""))
+
+GlobalModel=glmer(as.formula(gen_form),data=subset(ANALYSIS_SPDF@data,(sex==ModSex)&(pseason==ModSeason)), family="binomial",glmerControl(optimizer="bobyqa", optCtrl = list(maxfun = 300000)))
+beginCluster()
+PredictedSurface <- clusterR(bricked, raster::predict, args = list(model = GlobalModel, re.form = NA))
+PredictedSurface_INVLOG=clusterR(PredictedSurface, raster::calc, args = list(fun=inv.logit))
+endCluster()
+
+
+save.image(paste(ModSex,"_",ModSeason,".RData",sep=""))
+writeRaster(PredictedSurface,paste(ModSex,"_",ModSeason,".tif",sep=""))
+writeRaster(PredictedSurface_INVLOG,paste(ModSex,"_",ModSeason,"_invlogit.tif",sep=""))
+
+#######################################NEW SEASON#############################
+##############################################################################
+##############################################################################
+kfolds=5
+ModSeason="autumn"
+ModSex="F"
+gen_form="used~dem+dem2+TRI+OPN+NDL+H2O+BDL+LSC+TSC+MIX+BAR+(1|AnNum)-1" #This is where we're storing the glmer formula. Will paste it elsewhere to save on linespace and to allow easy editing of all models at the same time. call as "as.formula(gen_form)"
+#gen_form="used~dem+dem2+TRI+OPN+NDL+H2O+BDL+LSC+TSC+MIX+BAR+ASP+TRI*ASP+(1|AnNum)-1"
+#model=glmer(as.formula(gen_form),data=subset(ANALYSIS_SPDF@data,(sex==ModSex)&(pseason=="calving"|pseason=="summer")), family="binomial",nAGQ=6)
+
+temp_dat_obj=subset(ANALYSIS_SPDF@data,(sex==ModSex)&(pseason==ModSeason)) #creating subset data object for the model in question.
+withhold_key=as.data.frame(cbind(levels(temp_dat_obj$AnNum), sample(1:kfolds, length(levels(temp_dat_obj$AnNum)), replace=TRUE))) ## Note k-folds is conditioned on animal (annum), using 5 folds.
+names(withhold_key)=c("AnNum","Fold_N")
+temp_dat_obj$Fold_N=join(temp_dat_obj,withhold_key,by="AnNum",type="left",match="all")$Fold_N ## just joining up the key to datasubset so everyone has their fold number
+rank_cor_obj=c()
+for(i in 1:kfolds)
+{
+  trained=subset(temp_dat_obj,(Fold_N!=i))  #Training data = everyone but fold i
+  witheld=subset(temp_dat_obj,(Fold_N==i))  #Withheld data = only fold i
+  predicted_model=glmer(as.formula(gen_form),data=trained, family="binomial", glmerControl(optimizer="bobyqa", optCtrl = list(maxfun = 300000)))
+  beginCluster()
+  predicted_rast <- clusterR(bricked, raster::predict, args = list(model = predicted_model, re.form = NA)) #Predict raster based on model with no randomeffects structure.
+  endCluster()
+  predicted_witheld=predict(predicted_model, newdata=subset(witheld,(used==1)),re.form=NA) #Predict RSF scores to the withheld used points. This is used later...
+  predicted_avail_fit=extract(predicted_rast,availarea) #extract from the totality of the study area.
+  ###Following code care of Katie Christie/Mark Boyce, edited to play nice with us.####
+  ###Biggest changes are generalization to work with looping arch. as well as storing outputs to df for automation purposes.
+  names(predicted_avail_fit)="fit"
+  pred.avail.fit<-na.omit(predicted_avail_fit$fit)
+  #Make rsf bins with equal numbers of random locations in each bin
+  avail.rsf.bins<-cut(pred.avail.fit, quantile(pred.avail.fit, seq(0, 1, len = 11)), include.lowest = TRUE) 
+  avail.rsf.bins<-table(avail.rsf.bins)
+  avail.rsf.bins
+  v<-dimnames(avail.rsf.bins)
+  v <- data.frame(v, stringsAsFactors = FALSE)
+  y1<-v[1,1]
+  y2<-v[3,1]
+  y3<-v[5,1]
+  y4<-v[7,1]
+  y5<-v[9,1]
+  y6<-v[10,1]
+  ynew<-c(y1,y2,y3,y4,y5,y6)
+  ynew<-gsub("\\[", "", ynew)
+  ynew<-gsub("\\]", "", ynew)
+  ynew<-gsub("\\(", "", ynew)
+  ynew<-gsub("  ", "", ynew)
+  ynew<-as.numeric(unlist(strsplit(ynew,split="[,]")))
+  ynew<-ynew[-10]
+  avail.rsf.bins<-ynew
+  
+  rsf.with<-predicted_witheld[1:length(predicted_witheld)]
+  hist(rsf.with)
+  rsf.bins<-cut(rsf.with,breaks=avail.rsf.bins)
+  rsf.bins<-table(rsf.bins)
+  rsf.bins<-as.numeric(rsf.bins)
+  binrank<-seq(1,10,length.out=10)
+  cor_out=cor.test(rsf.bins,binrank,method="spearman")
+  rank_cor_obj=rbind(rank_cor_obj,c(rsf.bins,cor_out$p.value,cor_out$estimate))
+  cat(paste("Fold",i,"of",kfolds))
+  Sys.time()
+}
+
+rank_cor_overall=cor.test(c(rank_cor_obj[1,1:10],rank_cor_obj[2,1:10],rank_cor_obj[3,1:10],rank_cor_obj[4,1:10],rank_cor_obj[5,1:10]),rep(1:10,5),method="spearman")
+write.table(rank_cor_overall,paste(ModSex,"_",ModSeason,"_rankcor.txt",sep=""))
+
+GlobalModel=glmer(as.formula(gen_form),data=subset(ANALYSIS_SPDF@data,(sex==ModSex)&(pseason==ModSeason)), family="binomial",glmerControl(optimizer="bobyqa", optCtrl = list(maxfun = 300000)))
+beginCluster()
+PredictedSurface <- clusterR(bricked, raster::predict, args = list(model = GlobalModel, re.form = NA))
+PredictedSurface_INVLOG=clusterR(PredictedSurface, raster::calc, args = list(fun=inv.logit))
+endCluster()
+
+
+save.image(paste(ModSex,"_",ModSeason,".RData",sep=""))
+writeRaster(PredictedSurface,paste(ModSex,"_",ModSeason,".tif",sep=""))
+writeRaster(PredictedSurface_INVLOG,paste(ModSex,"_",ModSeason,"_invlogit.tif",sep=""))
+
+#######################################NEW SEASON#############################
+##############################################################################
+##############################################################################
+kfolds=5
+ModSeason="winter"
+ModSex="M"
+gen_form="used~dem+dem2+TRI+OPN+NDL+H2O+BDL+LSC+TSC+MIX+BAR+(1|AnNum)-1" #This is where we're storing the glmer formula. Will paste it elsewhere to save on linespace and to allow easy editing of all models at the same time. call as "as.formula(gen_form)"
+#gen_form="used~dem+dem2+TRI+OPN+NDL+H2O+BDL+LSC+TSC+MIX+BAR+ASP+TRI*ASP+(1|AnNum)-1"
+#model=glmer(as.formula(gen_form),data=subset(ANALYSIS_SPDF@data,(sex==ModSex)&(pseason=="calving"|pseason=="summer")), family="binomial",nAGQ=6)
+
+temp_dat_obj=subset(ANALYSIS_SPDF@data,(sex==ModSex)&(pseason==ModSeason)) #creating subset data object for the model in question.
+withhold_key=as.data.frame(cbind(levels(temp_dat_obj$AnNum), sample(1:kfolds, length(levels(temp_dat_obj$AnNum)), replace=TRUE))) ## Note k-folds is conditioned on animal (annum), using 5 folds.
+names(withhold_key)=c("AnNum","Fold_N")
+temp_dat_obj$Fold_N=join(temp_dat_obj,withhold_key,by="AnNum",type="left",match="all")$Fold_N ## just joining up the key to datasubset so everyone has their fold number
+rank_cor_obj=c()
+for(i in 1:kfolds)
+{
+  trained=subset(temp_dat_obj,(Fold_N!=i))  #Training data = everyone but fold i
+  witheld=subset(temp_dat_obj,(Fold_N==i))  #Withheld data = only fold i
+  predicted_model=glmer(as.formula(gen_form),data=trained, family="binomial", glmerControl(optimizer="bobyqa", optCtrl = list(maxfun = 300000)))
+  beginCluster()
+  predicted_rast <- clusterR(bricked, raster::predict, args = list(model = predicted_model, re.form = NA)) #Predict raster based on model with no randomeffects structure.
+  endCluster()
+  predicted_witheld=predict(predicted_model, newdata=subset(witheld,(used==1)),re.form=NA) #Predict RSF scores to the withheld used points. This is used later...
+  predicted_avail_fit=extract(predicted_rast,availarea) #extract from the totality of the study area.
+  ###Following code care of Katie Christie/Mark Boyce, edited to play nice with us.####
+  ###Biggest changes are generalization to work with looping arch. as well as storing outputs to df for automation purposes.
+  names(predicted_avail_fit)="fit"
+  pred.avail.fit<-na.omit(predicted_avail_fit$fit)
+  #Make rsf bins with equal numbers of random locations in each bin
+  avail.rsf.bins<-cut(pred.avail.fit, quantile(pred.avail.fit, seq(0, 1, len = 11)), include.lowest = TRUE) 
+  avail.rsf.bins<-table(avail.rsf.bins)
+  avail.rsf.bins
+  v<-dimnames(avail.rsf.bins)
+  v <- data.frame(v, stringsAsFactors = FALSE)
+  y1<-v[1,1]
+  y2<-v[3,1]
+  y3<-v[5,1]
+  y4<-v[7,1]
+  y5<-v[9,1]
+  y6<-v[10,1]
+  ynew<-c(y1,y2,y3,y4,y5,y6)
+  ynew<-gsub("\\[", "", ynew)
+  ynew<-gsub("\\]", "", ynew)
+  ynew<-gsub("\\(", "", ynew)
+  ynew<-gsub("  ", "", ynew)
+  ynew<-as.numeric(unlist(strsplit(ynew,split="[,]")))
+  ynew<-ynew[-10]
+  avail.rsf.bins<-ynew
+  
+  rsf.with<-predicted_witheld[1:length(predicted_witheld)]
+  hist(rsf.with)
+  rsf.bins<-cut(rsf.with,breaks=avail.rsf.bins)
+  rsf.bins<-table(rsf.bins)
+  rsf.bins<-as.numeric(rsf.bins)
+  binrank<-seq(1,10,length.out=10)
+  cor_out=cor.test(rsf.bins,binrank,method="spearman")
+  rank_cor_obj=rbind(rank_cor_obj,c(rsf.bins,cor_out$p.value,cor_out$estimate))
+  cat(paste("Fold",i,"of",kfolds))
+  Sys.time()
+}
+
+rank_cor_overall=cor.test(c(rank_cor_obj[1,1:10],rank_cor_obj[2,1:10],rank_cor_obj[3,1:10],rank_cor_obj[4,1:10],rank_cor_obj[5,1:10]),rep(1:10,5),method="spearman")
+write.table(rank_cor_overall,paste(ModSex,"_",ModSeason,"_rankcor.txt",sep=""))
+
+GlobalModel=glmer(as.formula(gen_form),data=subset(ANALYSIS_SPDF@data,(sex==ModSex)&(pseason==ModSeason)), family="binomial",glmerControl(optimizer="bobyqa", optCtrl = list(maxfun = 300000)))
+beginCluster()
+PredictedSurface <- clusterR(bricked, raster::predict, args = list(model = GlobalModel, re.form = NA))
+PredictedSurface_INVLOG=clusterR(PredictedSurface, raster::calc, args = list(fun=inv.logit))
+endCluster()
+
+
+save.image(paste(ModSex,"_",ModSeason,".RData",sep=""))
+writeRaster(PredictedSurface,paste(ModSex,"_",ModSeason,".tif",sep=""))
+writeRaster(PredictedSurface_INVLOG,paste(ModSex,"_",ModSeason,"_invlogit.tif",sep=""))
+
+#######################################NEW SEASON#############################
+##############################################################################
+##############################################################################
+kfolds=5
+ModSeason="greenup"
+ModSex="M"
+gen_form="used~dem+dem2+TRI+OPN+NDL+H2O+BDL+LSC+TSC+MIX+BAR+(1|AnNum)-1" #This is where we're storing the glmer formula. Will paste it elsewhere to save on linespace and to allow easy editing of all models at the same time. call as "as.formula(gen_form)"
+#gen_form="used~dem+dem2+TRI+OPN+NDL+H2O+BDL+LSC+TSC+MIX+BAR+ASP+TRI*ASP+(1|AnNum)-1"
+#model=glmer(as.formula(gen_form),data=subset(ANALYSIS_SPDF@data,(sex==ModSex)&(pseason=="calving"|pseason=="summer")), family="binomial",nAGQ=6)
+
+temp_dat_obj=subset(ANALYSIS_SPDF@data,(sex==ModSex)&(pseason==ModSeason)) #creating subset data object for the model in question.
+withhold_key=as.data.frame(cbind(levels(temp_dat_obj$AnNum), sample(1:kfolds, length(levels(temp_dat_obj$AnNum)), replace=TRUE))) ## Note k-folds is conditioned on animal (annum), using 5 folds.
+names(withhold_key)=c("AnNum","Fold_N")
+temp_dat_obj$Fold_N=join(temp_dat_obj,withhold_key,by="AnNum",type="left",match="all")$Fold_N ## just joining up the key to datasubset so everyone has their fold number
+rank_cor_obj=c()
+for(i in 1:kfolds)
+{
+  trained=subset(temp_dat_obj,(Fold_N!=i))  #Training data = everyone but fold i
+  witheld=subset(temp_dat_obj,(Fold_N==i))  #Withheld data = only fold i
+  predicted_model=glmer(as.formula(gen_form),data=trained, family="binomial", glmerControl(optimizer="bobyqa", optCtrl = list(maxfun = 300000)))
+  beginCluster()
+  predicted_rast <- clusterR(bricked, raster::predict, args = list(model = predicted_model, re.form = NA)) #Predict raster based on model with no randomeffects structure.
+  endCluster()
+  predicted_witheld=predict(predicted_model, newdata=subset(witheld,(used==1)),re.form=NA) #Predict RSF scores to the withheld used points. This is used later...
+  predicted_avail_fit=extract(predicted_rast,availarea) #extract from the totality of the study area.
+  ###Following code care of Katie Christie/Mark Boyce, edited to play nice with us.####
+  ###Biggest changes are generalization to work with looping arch. as well as storing outputs to df for automation purposes.
+  names(predicted_avail_fit)="fit"
+  pred.avail.fit<-na.omit(predicted_avail_fit$fit)
+  #Make rsf bins with equal numbers of random locations in each bin
+  avail.rsf.bins<-cut(pred.avail.fit, quantile(pred.avail.fit, seq(0, 1, len = 11)), include.lowest = TRUE) 
+  avail.rsf.bins<-table(avail.rsf.bins)
+  avail.rsf.bins
+  v<-dimnames(avail.rsf.bins)
+  v <- data.frame(v, stringsAsFactors = FALSE)
+  y1<-v[1,1]
+  y2<-v[3,1]
+  y3<-v[5,1]
+  y4<-v[7,1]
+  y5<-v[9,1]
+  y6<-v[10,1]
+  ynew<-c(y1,y2,y3,y4,y5,y6)
+  ynew<-gsub("\\[", "", ynew)
+  ynew<-gsub("\\]", "", ynew)
+  ynew<-gsub("\\(", "", ynew)
+  ynew<-gsub("  ", "", ynew)
+  ynew<-as.numeric(unlist(strsplit(ynew,split="[,]")))
+  ynew<-ynew[-10]
+  avail.rsf.bins<-ynew
+  
+  rsf.with<-predicted_witheld[1:length(predicted_witheld)]
+  hist(rsf.with)
+  rsf.bins<-cut(rsf.with,breaks=avail.rsf.bins)
+  rsf.bins<-table(rsf.bins)
+  rsf.bins<-as.numeric(rsf.bins)
+  binrank<-seq(1,10,length.out=10)
+  cor_out=cor.test(rsf.bins,binrank,method="spearman")
+  rank_cor_obj=rbind(rank_cor_obj,c(rsf.bins,cor_out$p.value,cor_out$estimate))
+  cat(paste("Fold",i,"of",kfolds))
+  Sys.time()
+}
+
+rank_cor_overall=cor.test(c(rank_cor_obj[1,1:10],rank_cor_obj[2,1:10],rank_cor_obj[3,1:10],rank_cor_obj[4,1:10],rank_cor_obj[5,1:10]),rep(1:10,5),method="spearman")
+write.table(rank_cor_overall,paste(ModSex,"_",ModSeason,"_rankcor.txt",sep=""))
+
+GlobalModel=glmer(as.formula(gen_form),data=subset(ANALYSIS_SPDF@data,(sex==ModSex)&(pseason==ModSeason)), family="binomial",glmerControl(optimizer="bobyqa", optCtrl = list(maxfun = 300000)))
+beginCluster()
+PredictedSurface <- clusterR(bricked, raster::predict, args = list(model = GlobalModel, re.form = NA))
+PredictedSurface_INVLOG=clusterR(PredictedSurface, raster::calc, args = list(fun=inv.logit))
+endCluster()
+
+
+save.image(paste(ModSex,"_",ModSeason,".RData",sep=""))
+writeRaster(PredictedSurface,paste(ModSex,"_",ModSeason,".tif",sep=""))
+writeRaster(PredictedSurface_INVLOG,paste(ModSex,"_",ModSeason,"_invlogit.tif",sep=""))
+
+#######################################NEW SEASON#############################
+##############################################################################
+##############################################################################
+kfolds=5
+ModSeason="summer"
+ModSex="M"
+gen_form="used~dem+dem2+TRI+OPN+NDL+H2O+BDL+LSC+TSC+MIX+BAR+(1|AnNum)-1" #This is where we're storing the glmer formula. Will paste it elsewhere to save on linespace and to allow easy editing of all models at the same time. call as "as.formula(gen_form)"
+#gen_form="used~dem+dem2+TRI+OPN+NDL+H2O+BDL+LSC+TSC+MIX+BAR+ASP+TRI*ASP+(1|AnNum)-1"
+#model=glmer(as.formula(gen_form),data=subset(ANALYSIS_SPDF@data,(sex==ModSex)&(pseason=="calving"|pseason=="summer")), family="binomial",nAGQ=6)
+
+temp_dat_obj=subset(ANALYSIS_SPDF@data,(sex==ModSex)&(pseason==ModSeason)) #creating subset data object for the model in question.
+withhold_key=as.data.frame(cbind(levels(temp_dat_obj$AnNum), sample(1:kfolds, length(levels(temp_dat_obj$AnNum)), replace=TRUE))) ## Note k-folds is conditioned on animal (annum), using 5 folds.
+names(withhold_key)=c("AnNum","Fold_N")
+temp_dat_obj$Fold_N=join(temp_dat_obj,withhold_key,by="AnNum",type="left",match="all")$Fold_N ## just joining up the key to datasubset so everyone has their fold number
+rank_cor_obj=c()
+for(i in 1:kfolds)
+{
+  trained=subset(temp_dat_obj,(Fold_N!=i))  #Training data = everyone but fold i
+  witheld=subset(temp_dat_obj,(Fold_N==i))  #Withheld data = only fold i
+  predicted_model=glmer(as.formula(gen_form),data=trained, family="binomial", glmerControl(optimizer="bobyqa", optCtrl = list(maxfun = 300000)))
+  beginCluster()
+  predicted_rast <- clusterR(bricked, raster::predict, args = list(model = predicted_model, re.form = NA)) #Predict raster based on model with no randomeffects structure.
+  endCluster()
+  predicted_witheld=predict(predicted_model, newdata=subset(witheld,(used==1)),re.form=NA) #Predict RSF scores to the withheld used points. This is used later...
+  predicted_avail_fit=extract(predicted_rast,availarea) #extract from the totality of the study area.
+  ###Following code care of Katie Christie/Mark Boyce, edited to play nice with us.####
+  ###Biggest changes are generalization to work with looping arch. as well as storing outputs to df for automation purposes.
+  names(predicted_avail_fit)="fit"
+  pred.avail.fit<-na.omit(predicted_avail_fit$fit)
+  #Make rsf bins with equal numbers of random locations in each bin
+  avail.rsf.bins<-cut(pred.avail.fit, quantile(pred.avail.fit, seq(0, 1, len = 11)), include.lowest = TRUE) 
+  avail.rsf.bins<-table(avail.rsf.bins)
+  avail.rsf.bins
+  v<-dimnames(avail.rsf.bins)
+  v <- data.frame(v, stringsAsFactors = FALSE)
+  y1<-v[1,1]
+  y2<-v[3,1]
+  y3<-v[5,1]
+  y4<-v[7,1]
+  y5<-v[9,1]
+  y6<-v[10,1]
+  ynew<-c(y1,y2,y3,y4,y5,y6)
+  ynew<-gsub("\\[", "", ynew)
+  ynew<-gsub("\\]", "", ynew)
+  ynew<-gsub("\\(", "", ynew)
+  ynew<-gsub("  ", "", ynew)
+  ynew<-as.numeric(unlist(strsplit(ynew,split="[,]")))
+  ynew<-ynew[-10]
+  avail.rsf.bins<-ynew
+  
+  rsf.with<-predicted_witheld[1:length(predicted_witheld)]
+  hist(rsf.with)
+  rsf.bins<-cut(rsf.with,breaks=avail.rsf.bins)
+  rsf.bins<-table(rsf.bins)
+  rsf.bins<-as.numeric(rsf.bins)
+  binrank<-seq(1,10,length.out=10)
+  cor_out=cor.test(rsf.bins,binrank,method="spearman")
+  rank_cor_obj=rbind(rank_cor_obj,c(rsf.bins,cor_out$p.value,cor_out$estimate))
+  cat(paste("Fold",i,"of",kfolds))
+  Sys.time()
+}
+
+rank_cor_overall=cor.test(c(rank_cor_obj[1,1:10],rank_cor_obj[2,1:10],rank_cor_obj[3,1:10],rank_cor_obj[4,1:10],rank_cor_obj[5,1:10]),rep(1:10,5),method="spearman")
+write.table(rank_cor_overall,paste(ModSex,"_",ModSeason,"_rankcor.txt",sep=""))
+
+GlobalModel=glmer(as.formula(gen_form),data=subset(ANALYSIS_SPDF@data,(sex==ModSex)&(pseason==ModSeason)), family="binomial",glmerControl(optimizer="bobyqa", optCtrl = list(maxfun = 300000)))
+beginCluster()
+PredictedSurface <- clusterR(bricked, raster::predict, args = list(model = GlobalModel, re.form = NA))
+PredictedSurface_INVLOG=clusterR(PredictedSurface, raster::calc, args = list(fun=inv.logit))
+endCluster()
+
+
+save.image(paste(ModSex,"_",ModSeason,".RData",sep=""))
+writeRaster(PredictedSurface,paste(ModSex,"_",ModSeason,".tif",sep=""))
+writeRaster(PredictedSurface_INVLOG,paste(ModSex,"_",ModSeason,"_invlogit.tif",sep=""))
+
+#######################################NEW SEASON#############################
+##############################################################################
+##############################################################################
+kfolds=5
+ModSeason="autumn"
+ModSex="M"
+gen_form="used~dem+dem2+TRI+OPN+NDL+H2O+BDL+LSC+TSC+MIX+BAR+(1|AnNum)-1" #This is where we're storing the glmer formula. Will paste it elsewhere to save on linespace and to allow easy editing of all models at the same time. call as "as.formula(gen_form)"
+#gen_form="used~dem+dem2+TRI+OPN+NDL+H2O+BDL+LSC+TSC+MIX+BAR+ASP+TRI*ASP+(1|AnNum)-1"
+#model=glmer(as.formula(gen_form),data=subset(ANALYSIS_SPDF@data,(sex==ModSex)&(pseason=="calving"|pseason=="summer")), family="binomial",nAGQ=6)
+
+temp_dat_obj=subset(ANALYSIS_SPDF@data,(sex==ModSex)&(pseason==ModSeason)) #creating subset data object for the model in question.
+withhold_key=as.data.frame(cbind(levels(temp_dat_obj$AnNum), sample(1:kfolds, length(levels(temp_dat_obj$AnNum)), replace=TRUE))) ## Note k-folds is conditioned on animal (annum), using 5 folds.
+names(withhold_key)=c("AnNum","Fold_N")
+temp_dat_obj$Fold_N=join(temp_dat_obj,withhold_key,by="AnNum",type="left",match="all")$Fold_N ## just joining up the key to datasubset so everyone has their fold number
+rank_cor_obj=c()
+for(i in 1:kfolds)
+{
+  trained=subset(temp_dat_obj,(Fold_N!=i))  #Training data = everyone but fold i
+  witheld=subset(temp_dat_obj,(Fold_N==i))  #Withheld data = only fold i
+  predicted_model=glmer(as.formula(gen_form),data=trained, family="binomial", glmerControl(optimizer="bobyqa", optCtrl = list(maxfun = 300000)))
+  beginCluster()
+  predicted_rast <- clusterR(bricked, raster::predict, args = list(model = predicted_model, re.form = NA)) #Predict raster based on model with no randomeffects structure.
+  endCluster()
+  predicted_witheld=predict(predicted_model, newdata=subset(witheld,(used==1)),re.form=NA) #Predict RSF scores to the withheld used points. This is used later...
+  predicted_avail_fit=extract(predicted_rast,availarea) #extract from the totality of the study area.
+  ###Following code care of Katie Christie/Mark Boyce, edited to play nice with us.####
+  ###Biggest changes are generalization to work with looping arch. as well as storing outputs to df for automation purposes.
+  names(predicted_avail_fit)="fit"
+  pred.avail.fit<-na.omit(predicted_avail_fit$fit)
+  #Make rsf bins with equal numbers of random locations in each bin
+  avail.rsf.bins<-cut(pred.avail.fit, quantile(pred.avail.fit, seq(0, 1, len = 11)), include.lowest = TRUE) 
+  avail.rsf.bins<-table(avail.rsf.bins)
+  avail.rsf.bins
+  v<-dimnames(avail.rsf.bins)
+  v <- data.frame(v, stringsAsFactors = FALSE)
+  y1<-v[1,1]
+  y2<-v[3,1]
+  y3<-v[5,1]
+  y4<-v[7,1]
+  y5<-v[9,1]
+  y6<-v[10,1]
+  ynew<-c(y1,y2,y3,y4,y5,y6)
+  ynew<-gsub("\\[", "", ynew)
+  ynew<-gsub("\\]", "", ynew)
+  ynew<-gsub("\\(", "", ynew)
+  ynew<-gsub("  ", "", ynew)
+  ynew<-as.numeric(unlist(strsplit(ynew,split="[,]")))
+  ynew<-ynew[-10]
+  avail.rsf.bins<-ynew
+  
+  rsf.with<-predicted_witheld[1:length(predicted_witheld)]
+  hist(rsf.with)
+  rsf.bins<-cut(rsf.with,breaks=avail.rsf.bins)
+  rsf.bins<-table(rsf.bins)
+  rsf.bins<-as.numeric(rsf.bins)
+  binrank<-seq(1,10,length.out=10)
+  cor_out=cor.test(rsf.bins,binrank,method="spearman")
+  rank_cor_obj=rbind(rank_cor_obj,c(rsf.bins,cor_out$p.value,cor_out$estimate))
+  cat(paste("Fold",i,"of",kfolds))
+  Sys.time()
+}
+
+rank_cor_overall=cor.test(c(rank_cor_obj[1,1:10],rank_cor_obj[2,1:10],rank_cor_obj[3,1:10],rank_cor_obj[4,1:10],rank_cor_obj[5,1:10]),rep(1:10,5),method="spearman")
+write.table(rank_cor_overall,paste(ModSex,"_",ModSeason,"_rankcor.txt",sep=""))
+
+GlobalModel=glmer(as.formula(gen_form),data=subset(ANALYSIS_SPDF@data,(sex==ModSex)&(pseason==ModSeason)), family="binomial",glmerControl(optimizer="bobyqa", optCtrl = list(maxfun = 300000)))
+beginCluster()
+PredictedSurface <- clusterR(bricked, raster::predict, args = list(model = GlobalModel, re.form = NA))
+PredictedSurface_INVLOG=clusterR(PredictedSurface, raster::calc, args = list(fun=inv.logit))
+endCluster()
+
+
+save.image(paste(ModSex,"_",ModSeason,".RData",sep=""))
+writeRaster(PredictedSurface,paste(ModSex,"_",ModSeason,".tif",sep=""))
+writeRaster(PredictedSurface_INVLOG,paste(ModSex,"_",ModSeason,"_invlogit.tif",sep=""))
+
