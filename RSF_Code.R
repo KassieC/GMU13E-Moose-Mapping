@@ -2,7 +2,7 @@ library(plyr)
 library(sp)
 library(raster)
 library(rgdal)
-wd="" ##Directory with the data in it.
+wd="" #Directory with data in it.
 
 setwd(wd)
 LOC_DF=read.table("WatMooPts-1267.txt",header=TRUE,sep="\t")
@@ -132,13 +132,6 @@ for (i in 1:nrow(LOC_SPDF))
   AVAIL_SPDF=rbind(AVAIL_SPDF,dumpspdf)
   }
 rm(dumpspdf,dumpdata,i)
-
-# In order to add the sex information, I need to unload adehabitat* (and re-load plyr) to unmask plyr's ID function. Frustrating. 
-# detach(package:adehabitatLT)
-# detach(package:adehabitatMA)
-# detach(package:adehabitatHR)
-# detach(package:plyr)
-# library(plyr)
 
 temp=as.data.frame(x= c(as.character(AVAIL_SPDF$AnNum)))
 names(temp)=c("AnNum")
@@ -288,7 +281,7 @@ plot(subset(ANALYSIS_SPDF@data,(sex=="F")&(pseason=="summer"))$dem, residuals(Su
 
 plot(subset(ANALYSIS_SPDF@data,(sex=="F")&(pseason=="fall"))$dem, residuals(Fall_model), col=c("Blue","Red")[subset(ANALYSIS_SPDF@data,(sex=="F")&(pseason=="fall"))$used+1])
 
-plot(subset(ANALYSIS_SPDF@data,(sex=="F")&(pseason=="postrut"))$dem, residuals(Postrut_model), col=c("Blue","Red")[subset(ANALYSIS_SPDF@data,(sex=="F")&(pseason=="postrut"))$used+1])
+#plot(subset(ANALYSIS_SPDF@data,(sex=="F")&(pseason=="postrut"))$dem, residuals(Postrut_model), col=c("Blue","Red")[subset(ANALYSIS_SPDF@data,(sex=="F")&(pseason=="postrut"))$used+1])
 
 
 beginCluster()
@@ -310,4 +303,3 @@ hoslem.test(subset(ANALYSIS_SPDF@data,(sex=="F")&(pseason=="spring"))$used, fitt
 hoslem.test(subset(ANALYSIS_SPDF@data,(sex=="F")&(pseason=="calving"))$used, fitted(Calving_model), 10)
 hoslem.test(subset(ANALYSIS_SPDF@data,(sex=="F")&(pseason=="summer"))$used, fitted(Summer_model), 10)
 hoslem.test(subset(ANALYSIS_SPDF@data,(sex=="F")&(pseason=="fall"))$used, fitted(Fall_model), 10)
-hoslem.test(subset(ANALYSIS_SPDF@data,(sex=="F")&(pseason=="postrut"))$used, fitted(Postrut_model), 10)
